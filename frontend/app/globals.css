@@ -1,0 +1,8 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+html, body { background: #12161b; color: #e7ebef; }
+body { font-family: ui-sans-serif, "Segoe UI", "Helvetica Neue", Arial, "Noto Sans SC", sans-serif; font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+@keyframes slide-in { from { transform: translateX(16px); opacity: 0 } to { transform: none; opacity: 1 } }
+.toast { animation: slide-in .18s ease-out; }
