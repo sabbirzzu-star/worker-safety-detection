@@ -12,7 +12,7 @@ multi-user administration.
 ## Architecture
 
 ```text
-ESP32-CAM (640x480 JPEG, every 400 ms)
+ESP32-S3-CAM (640x480 JPEG, captured every 200 ms)
         |
         | POST /ingest over local Wi-Fi
         v
@@ -126,13 +126,24 @@ Open `http://localhost:3000` and select `ESP32-CAM` as the source.
    as the source.
 7. Allow inbound TCP port 8000 through the computer firewall if required.
 
-The firmware sends raw JPEG bodies to `POST /ingest`. It does not serve the
-dashboard stream itself: the FastAPI backend performs YOLO inference and exposes
-the annotated result at `/stream`, which is what the frontend displays.
+The firmware captures locally at up to 5 FPS and sends raw JPEG bodies to
+`POST /ingest`. Capture and upload run independently: the uploader always sends
+the newest completed JPEG and drops stale frames when the network is slower than
+the camera. For an internet deployment,
+use the HTTPS endpoint exposed by the reverse proxy, for example
+`https://api.example.com/ingest`. The uploader reuses the HTTPS connection and
+uses bounded timeouts so a slow WAN request cannot build an unbounded camera
+buffer. It does not change the camera sensor settings when switching from local
+HTTP to HTTPS.
 
-The firmware captures VGA JPEG frames and posts one frame approximately every 400 ms,
-which is about 2.5 FPS. It reconnects Wi-Fi when necessary and uses the latest camera
-buffer to avoid sending stale frames. Use a stable 5V supply; weak power can cause resets.
+The firmware currently uses `setInsecure()` for TLS because the server CA
+certificate is not bundled in the sketch. Use a CA certificate or certificate
+bundle before treating the endpoint as production-secure.
+
+The firmware captures VGA JPEG frames approximately every 200 ms, which is up to
+5 FPS locally. It uploads the newest available frame without waiting for older
+frames, reconnects Wi-Fi when necessary, and keeps camera timing independent of
+WAN latency. Use a stable 5V supply; weak power can cause resets.
 
 ## Fallback sources
 
@@ -176,7 +187,7 @@ Set these environment variables before starting the backend:
 | Variable          | Default                                          | Purpose                                                  |
 | ----------------- | ------------------------------------------------ | -------------------------------------------------------- |
 | `MODEL_PATH`      | `backend/best.pt` when run from the project root | YOLO weights path                                        |
-| `IMGSZ`           | `640`                                            | Inference image size                                     |
+| `IMGSZ`           | `416`                                            | Inference image size; use `640` for maximum detail       |
 | `CONF_PERSON`     | `0.50`                                           | Person confidence threshold                              |
 | `CONF_PPE`        | `0.40`                                           | Hat, vest, and other PPE threshold                       |
 | `DEVICE`          | `cpu`                                            | Ultralytics device, such as `cpu` or `0`                 |
@@ -187,6 +198,7 @@ Set these environment variables before starting the backend:
 | `REQUIRE_HARDHAT` | `1`                                              | Require a hard hat when set to `1`                       |
 | `REQUIRE_VEST`    | `1`                                              | Require a vest when set to `1`                           |
 | `SHOW_OTHER_PPE`  | `1`                                              | Draw gloves, masks, and boots when set to `1`            |
+| `JPEG_QUALITY`    | `80`                                             | Annotated stream JPEG quality                           |
 
 PowerShell example:
 

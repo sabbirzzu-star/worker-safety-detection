@@ -78,7 +78,7 @@ export default function Dashboard() {
             <div className={`relative overflow-hidden rounded-xl border bg-black shadow-2xl ${bad ? "border-bad/60" : "border-line"}`}>
               <div className="feed-toolbar absolute inset-x-0 top-0 z-10 flex items-center justify-between px-3 py-3 sm:px-4"><span className="flex items-center gap-2 text-[11px] font-semibold tracking-wide text-white"><span className="status-dot status-dot-live" />ANNOTATED CAMERA</span><span className="rounded bg-black/60 px-2 py-1 text-[11px] text-white/80">{sourceLabel}</span></div>
               {api && /* eslint-disable-next-line @next/next/no-img-element */
-                <img src={`${api}/stream`} alt="Live annotated camera feed" className="camera-feed block h-auto max-h-[78vh] min-h-[240px] w-full bg-black object-contain" />}
+                <img key={sourceLabel} src={`${api}/stream?source=${stats?.source ?? "initial"}`} alt="Live annotated camera feed" decoding="async" fetchPriority="high" className="camera-feed block h-auto max-h-[78vh] min-h-[240px] w-full bg-black object-contain" />}
               {noSignal && <div className="absolute inset-0 grid place-items-center bg-black/80 px-5 text-center"><div className="max-w-xs"><div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-full bg-warn/15 font-bold text-warn">!</div><p className="font-semibold text-white">No ESP32 frames</p><p className="mt-1 text-xs leading-5 text-mute">Check the board Wi-Fi and SERVER_URL. This view will recover automatically.</p></div></div>}
               {stats?.source_error && <div className="absolute inset-x-0 bottom-0 bg-bad/90 px-3 py-2 text-xs">{stats.source_error}</div>}
             </div>

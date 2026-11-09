@@ -2,6 +2,7 @@
 // Captures JPEG frames and POSTs them to the FastAPI /ingest endpoint.
 // The backend performs inference; the dashboard displays its annotated stream.
 
+#include <WiFiClientSecure.h>
 #include "esp_camera.h"
 #include <HTTPClient.h>
 #include <WiFi.h>
@@ -9,8 +10,13 @@
 // ---------- Set these values ----------
 const char* WIFI_SSID = "YOUR_WIFI_SSID";
 const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
-const char* SERVER_URL = "http://192.168.1.100:8000/ingest";
-const uint32_t FRAME_PERIOD_MS = 400;  // 2.5 FPS
+const char* SERVER_URL = "https://api.bdnextshop.com/ingest";
+
+const uint32_t CAPTURE_PERIOD_MS = 200;  // 5 FPS; camera timing remains controlled
+const uint32_t HTTPS_CONNECT_TIMEOUT_MS = 4000;
+const uint32_t HTTPS_REQUEST_TIMEOUT_MS = 6000;
+const size_t MAX_JPEG_BYTES = 350 * 1024;
+const size_t FALLBACK_JPEG_BYTES = 64 * 1024;
 // --------------------------------------
 
 // ESP32-S3-CAM pin map supplied for this project.
@@ -34,6 +40,7 @@ const uint32_t FRAME_PERIOD_MS = 400;  // 2.5 FPS
 static bool connect_wifi() {
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
 
   Serial.print("Connecting to Wi-Fi");
@@ -107,36 +114,122 @@ static bool init_camera() {
   return true;
 }
 
-static bool post_frame(camera_fb_t* frame) {
-  WiFiClient client;
-  HTTPClient http;
-  http.setConnectTimeout(3000);
-  http.setTimeout(5000);
+struct FrameSlot {
+  uint8_t* data;
+  size_t length;
+};
 
-  if (!http.begin(client, SERVER_URL)) {
-    Serial.println("Could not configure HTTP client.");
+FrameSlot frameSlots[2] = {};
+int slotCount = 0;
+size_t frameBufferSize = 0;
+volatile int readySlot = -1;
+volatile int uploadingSlot = -1;
+portMUX_TYPE frameMux = portMUX_INITIALIZER_UNLOCKED;
+SemaphoreHandle_t uploadSignal;
+WiFiClientSecure httpsClient;
+HTTPClient httpsRequest;
+bool httpsReady = false;
+
+static void release_https() {
+  if (httpsReady) {
+    httpsRequest.end();
+    httpsReady = false;
+  }
+}
+
+static bool start_https_connection() {
+  httpsClient.setInsecure();
+  httpsClient.setTimeout(HTTPS_REQUEST_TIMEOUT_MS);
+  httpsRequest.setConnectTimeout(HTTPS_CONNECT_TIMEOUT_MS);
+  httpsRequest.setTimeout(HTTPS_REQUEST_TIMEOUT_MS);
+  httpsRequest.setReuse(true);
+
+  if (!httpsRequest.begin(httpsClient, SERVER_URL)) {
+    Serial.println("Could not configure HTTPS client.");
+    release_https();
     return false;
   }
 
-  http.addHeader("Content-Type", "image/jpeg");
-  http.addHeader("Cache-Control", "no-cache");
-  const int status = http.POST(frame->buf, frame->len);
-  const bool accepted = status >= 200 && status < 300;
+  httpsRequest.addHeader("Content-Type", "image/jpeg");
+  httpsRequest.addHeader("Cache-Control", "no-cache");
+  httpsRequest.addHeader("Connection", "keep-alive");
+  httpsRequest.addHeader("Accept-Encoding", "identity");
+  httpsReady = true;
+  return true;
+}
 
+static bool post_buffer(uint8_t* data, size_t length) {
+  if (WiFi.status() != WL_CONNECTED) {
+    release_https();
+    return false;
+  }
+  if (!httpsReady && !start_https_connection()) return false;
+
+  const int status = httpsRequest.POST(data, length);
+  const bool accepted = status >= 200 && status < 300;
   if (accepted) {
-    Serial.printf("Frame sent: %u bytes, HTTP %d\n", frame->len, status);
+    Serial.printf("Frame sent: %u bytes, HTTPS %d\n", length, status);
   } else {
-    Serial.printf("Frame upload failed: HTTP %d\n", status);
+    Serial.printf("Frame upload failed: HTTPS %d (%s)\n", status, httpsRequest.errorToString(status).c_str());
+    release_https();
+  }
+  return accepted;
+}
+
+static void uploader_task(void*) {
+  for (;;) {
+    if (xSemaphoreTake(uploadSignal, portMAX_DELAY) != pdTRUE) continue;
+
+    int slot = -1;
+    portENTER_CRITICAL(&frameMux);
+    slot = readySlot;
+    readySlot = -1;
+    uploadingSlot = slot;
+    portEXIT_CRITICAL(&frameMux);
+
+    if (slot >= 0) {
+      post_buffer(frameSlots[slot].data, frameSlots[slot].length);
+    }
+    portENTER_CRITICAL(&frameMux);
+    uploadingSlot = -1;
+    portEXIT_CRITICAL(&frameMux);
+  }
+}
+
+static bool publish_frame(camera_fb_t* frame) {
+  int slot = -1;
+  portENTER_CRITICAL(&frameMux);
+  for (int i = 0; i < slotCount; ++i) {
+    if (i != uploadingSlot) {
+      slot = i;
+      break;
+    }
+  }
+  portEXIT_CRITICAL(&frameMux);
+
+  if (slot < 0 || frame->len > frameBufferSize) {
+    Serial.printf("Frame skipped: %u bytes, upload buffer busy or frame too large\n", frame->len);
+    return false;
   }
 
-  http.end();
-  return accepted;
+  memcpy(frameSlots[slot].data, frame->buf, frame->len);
+  frameSlots[slot].length = frame->len;
+  portENTER_CRITICAL(&frameMux);
+  readySlot = slot;
+  portEXIT_CRITICAL(&frameMux);
+  xSemaphoreGive(uploadSignal);
+  return true;
 }
 
 void setup() {
   Serial.begin(115200);
-  delay(1000);
+  delay(2000);
+  Serial.flush();
   Serial.println("\nIISMS ESP32-S3-CAM uploader starting...");
+  Serial.printf("Free heap: %lu bytes, PSRAM: %s (%lu bytes free)\n",
+                static_cast<unsigned long>(ESP.getFreeHeap()),
+                psramFound() ? "yes" : "no",
+                static_cast<unsigned long>(ESP.getFreePsram()));
 
   if (!init_camera()) {
     Serial.println("Restarting after camera initialization failure.");
@@ -147,6 +240,33 @@ void setup() {
   while (!connect_wifi()) {
     delay(5000);
   }
+
+  const bool hasPsram = psramFound();
+  const size_t bufferSize = hasPsram ? MAX_JPEG_BYTES : FALLBACK_JPEG_BYTES;
+  frameBufferSize = bufferSize;
+  slotCount = 2;
+  for (int i = 0; i < slotCount; ++i) {
+    frameSlots[i].data = hasPsram
+      ? static_cast<uint8_t*>(ps_malloc(bufferSize))
+      : static_cast<uint8_t*>(malloc(bufferSize));
+    if (frameSlots[i].data == nullptr) {
+      if (i == 1) {
+        slotCount = 1;
+        Serial.println("Second frame buffer unavailable; using single-buffer mode.");
+        break;
+      }
+      Serial.printf("Frame buffer allocation failed: %u bytes\n", bufferSize);
+      while (true) delay(1000);
+    }
+  }
+  Serial.printf("Uploader buffers: %d x %u bytes\n", slotCount, bufferSize);
+  uploadSignal = xSemaphoreCreateBinary();
+  if (uploadSignal == nullptr) {
+    Serial.println("Could not create uploader signal.");
+    delay(3000);
+    ESP.restart();
+  }
+  xTaskCreatePinnedToCore(uploader_task, "iis upl", 8192, nullptr, 1, nullptr, 0);
 }
 
 void loop() {
@@ -164,13 +284,13 @@ void loop() {
   if (frame == nullptr) {
     Serial.println("Camera capture failed.");
   } else {
-    post_frame(frame);
+    publish_frame(frame);
     esp_camera_fb_return(frame);
   }
 
   const uint32_t elapsed = millis() - started;
-  if (elapsed < FRAME_PERIOD_MS) {
-    delay(FRAME_PERIOD_MS - elapsed);
+  if (elapsed < CAPTURE_PERIOD_MS) {
+    delay(CAPTURE_PERIOD_MS - elapsed);
   } else {
     delay(1);
   }

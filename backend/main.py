@@ -14,7 +14,7 @@ from compliance import Config, SafetyTracker, assess_frame
 
 # ---------- configuration (override with environment variables) ----------
 MODEL_PATH = os.getenv("MODEL_PATH", os.path.join(os.path.dirname(__file__), "best.pt"))
-IMGSZ = int(os.getenv("IMGSZ", "640"))
+IMGSZ = int(os.getenv("IMGSZ", "416"))
 CONF_PERSON = float(os.getenv("CONF_PERSON", "0.50"))
 CONF_PPE = float(os.getenv("CONF_PPE", "0.40"))
 DEVICE = os.getenv("DEVICE", "cpu")
@@ -25,6 +25,8 @@ INITIAL_SOURCE = os.getenv("SOURCE", "esp32")
 REQUIRE_HAT = os.getenv("REQUIRE_HARDHAT", "1") == "1"
 REQUIRE_VEST = os.getenv("REQUIRE_VEST", "1") == "1"
 SHOW_OTHER_PPE = os.getenv("SHOW_OTHER_PPE", "1") == "1"  # draw gloves/mask/boots (informational)
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "80"))
+USE_HALF = DEVICE not in ("cpu", "")
 
 HAT_NAMES = {"hard_hat", "hardhat", "helmet", "hard-hat"}
 VEST_NAMES = {"vest", "safety_vest", "safety-vest"}
@@ -49,7 +51,7 @@ class Engine:
         self.events: deque = deque(maxlen=200)
         self._event_id = 0
         self.stats = dict(workers=0, compliant=0, violations=0, pending=0, fps=0.0, latency_ms=0.0,
-                          frames=0, last_input_age=None)
+                          frames=0, last_input_age=None, dropped_inputs=0)
         self.last_input = 0.0
         self._t_prev = None
         self.source = "esp32"
@@ -107,6 +109,8 @@ class Engine:
         """Latest-frame-wins: if inference is still busy, the older pending frame is dropped."""
         self.last_input = time.time()
         with self.lock:
+            if self.pending is not None:
+                self.stats["dropped_inputs"] += 1
             self.pending = (frame, time.perf_counter())
         self.wake.set()
 
@@ -125,7 +129,14 @@ class Engine:
                 print("process error:", repr(e))
 
     def _process(self, frame, t_recv):
-        res = self.model.predict(frame, imgsz=IMGSZ, conf=min(CONF_PERSON, CONF_PPE), device=DEVICE, verbose=False)[0]
+        res = self.model.predict(
+            frame,
+            imgsz=IMGSZ,
+            conf=min(CONF_PERSON, CONF_PPE),
+            device=DEVICE,
+            half=USE_HALF,
+            verbose=False,
+        )[0]
         persons, hats, vests, others = [], [], [], []
         for b in res.boxes:
             name = self.names.get(int(b.cls[0]), "")
@@ -142,7 +153,7 @@ class Engine:
         now = time.time()
         workers, alerts = self.tracker.update(assess_frame(persons, hats, vests, self.tracker.cfg), now)
         out = self._draw(frame, workers, hats, vests, others)
-        ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        ok, buf = cv2.imencode(".jpg", out, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         latency = (time.perf_counter() - t_recv) * 1000
         with self.lock:
             if ok:
