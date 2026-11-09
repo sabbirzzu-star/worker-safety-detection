@@ -212,7 +212,7 @@ function CameraPicker({ api, active }: { api: string; active: boolean }) {
       </div>
       {err && <p className="mt-2 text-sm text-bad">{err}</p>}
       <p className="mt-2 text-xs text-mute">Phone as webcam: connect it with Phone Link, DroidCam, Iriun or Camo, then press Refresh.</p>
-      <video ref={videoRef} muted playsInline className="absolute h-px w-px opacity-0" />
+      <video ref={videoRef} muted playsInline autoPlay className="mt-3 block w-full rounded-md border border-line bg-black object-contain" />
     </div>
   );
 }
