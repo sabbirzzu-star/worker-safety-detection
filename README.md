@@ -1,269 +1,438 @@
-# IISMS: Intelligent Industrial Safety Monitoring System
+# IISMS
 
-IISMS is a low-cost, real-time PPE monitoring prototype for industrial workspaces. An
-ESP32-S3-CAM captures JPEG snapshots, a FastAPI service runs YOLO11n inference
-and geometric compliance checks, and a Next.js dashboard shows the annotated stream,
-worker metrics, and live violation alerts.
+## Intelligent Industrial Safety Monitoring System
 
-The system is intentionally designed for a reliable academic demonstration: inference
-is in memory, events are volatile, and there is no database, authentication layer, or
-multi-user administration.
+IISMS is a real-time PPE monitoring system for industrial work areas. It captures
+JPEG frames from an ESP32-S3 camera (or a laptop/browser camera), runs person and
+PPE detection with YOLO, applies spatial and temporal compliance rules, and
+publishes an annotated live view with operational metrics and violation alerts.
 
-## Architecture
+The project is designed for a reliable prototype and academic demonstration. It
+does not currently provide authentication, a database, persistent event storage,
+multi-tenant administration, or production-grade TLS certificate validation.
 
-```text
-ESP32-S3-CAM (640x480 JPEG, captured every 200 ms)
-        |
-        | POST /ingest over local Wi-Fi
-        v
-FastAPI + OpenCV + YOLO11n (backend/best.pt)
-        |
-        | MJPEG /stream + WebSocket /ws
-        v
-Next.js dashboard (http://localhost:3000)
-```
-
-Repository layout:
+## System architecture
 
 ```text
-backend/
-  best.pt                 Trained YOLO model
-  main.py                 FastAPI app, inference engine, streaming API
-  compliance.py           Spatial PPE checks and temporal worker tracking
-  requirements.txt        Python dependencies
-  simulate_esp32.py       Sends a local video as ESP32-style JPEG requests
-  tests/                   Compliance and server tests
-firmware/esp32_cam/
-  esp32_cam.ino           ESP32-S3-CAM JPEG uploader firmware
-frontend/
-  app/page.tsx            Dashboard and browser-camera uploader
-  app/globals.css         Dashboard styling
-run_laptop.bat            Windows laptop-camera launcher
-run_laptop.sh             macOS/Linux laptop-camera launcher
+┌──────────────────────┐       raw JPEG POST        ┌──────────────────────────┐
+│ ESP32-S3-CAM          │ ─────────────────────────► │ FastAPI inference server │
+│ capture + uploader    │       /ingest             │ OpenCV + YOLO + tracker  │
+└──────────────────────┘                            └─────────────┬────────────┘
+                                                                  │
+                                      MJPEG /stream              │ WebSocket /ws
+                                                                  │ REST /api/*
+                                                                  ▼
+                                                      ┌─────────────────────────┐
+                                                      │ Next.js monitoring UI   │
+                                                      │ desktop + mobile layout │
+                                                      └─────────────────────────┘
 ```
 
-## Detection model
+### Runtime flow
 
-`backend/best.pt` contains six classes trained for PPE detection:
+1. The ESP32 camera captures a JPEG approximately every 200 ms, up to 5 FPS.
+2. A dedicated FreeRTOS uploader task sends the newest completed JPEG to
+   `POST /ingest`. Capture does not wait for the previous network request.
+3. FastAPI decodes the JPEG and places it in a single latest-frame inference slot.
+   If inference is busy, an older pending frame is replaced by the newer frame.
+4. YOLO detects people, hard hats, vests, and informational PPE classes.
+5. The compliance module assigns PPE to people by geometric containment and
+   smooths results across frames with a lightweight IoU tracker.
+6. FastAPI encodes the annotated frame as JPEG and exposes it as an MJPEG stream.
+7. The dashboard renders the stream and receives statistics and new violation
+   events over WebSocket.
+
+This is intentionally a latest-frame-wins design. It prefers a current view over
+processing a backlog of stale frames, which keeps WAN deployments responsive.
+
+## Repository layout
 
 ```text
-Gloves, Hard_hat, Mask, Person, Safety_boots, Vest
+.
+├── backend/
+│   ├── best.pt                 YOLO model weights
+│   ├── main.py                 FastAPI app, sources, inference, stream, API
+│   ├── compliance.py           PPE geometry, tracking, smoothing, alerts
+│   ├── requirements.txt        Python dependencies
+│   ├── simulate_esp32.py       Sends image/video frames as JPEG POST requests
+│   └── tests/
+│       ├── test_compliance.py  Pure compliance and tracking tests
+│       └── test_server.py      End-to-end FastAPI test with a fake YOLO model
+├── firmware/
+│   └── ESP32_S3_CAM_Test/
+│       ├── platformio.ini      PlatformIO ESP32-S3 environment
+│       └── src/main.cpp        Active ESP32-S3 capture/uploader firmware
+├── frontend/
+│   ├── app/page.tsx            Dashboard and browser-camera uploader
+│   ├── app/globals.css         Dashboard styles and responsive feed rules
+│   ├── app/layout.tsx          Page metadata and root layout
+│   └── package.json            Next.js scripts and dependencies
+├── .github/workflows/deploy.yml
+│                               SSH-triggered VPS deployment on main pushes
+├── run_laptop.bat              Windows quick launcher
+└── run_laptop.sh               macOS/Linux quick launcher
 ```
 
-Hard hats and vests are the enforced requirements. Gloves, masks, and safety boots are
-informational detections and can be drawn as grey boxes with `SHOW_OTHER_PPE=1`.
+Generated directories such as `frontend/node_modules`, `frontend/.next`, Python
+virtual environments, and PlatformIO build output should not be committed.
 
 ## Requirements
 
 - Python 3.10 or newer
 - Node.js 18 or newer and npm
-- Arduino IDE or PlatformIO for the ESP32-CAM firmware
-- ESP32-S3-CAM with a compatible camera sensor for hardware mode
-- A computer and camera on the same local network for ESP32 mode
+- A machine with enough memory to load the YOLO weights
+- PlatformIO Core/IDE for hardware mode
+- ESP32-S3-CAM compatible with the pin map in `firmware/ESP32_S3_CAM_Test/src/main.cpp`
+- A network path from the ESP32 to the FastAPI server
 
-The backend runs YOLO on the CPU by default. An NVIDIA-compatible PyTorch setup may use
-`DEVICE=0`, but CPU and GPU latency should be measured from the dashboard rather than
-assumed from model specifications.
+The backend defaults to CPU inference. A compatible Ultralytics/PyTorch GPU
+installation can be selected with `DEVICE=0`; measure actual latency and accuracy
+before changing production settings.
 
-## Quick start: laptop camera
+## Quick start: laptop/browser camera
 
-This mode needs no ESP32. From the repository root:
+This mode does not require an ESP32. From the repository root:
 
-**Windows:** double-click `run_laptop.bat`.
+### Windows
 
-**macOS/Linux:**
+```powershell
+.\run_laptop.bat
+```
+
+The launcher installs backend/frontend dependencies when needed, starts FastAPI
+with `SOURCE=browser`, starts Next.js, and opens `http://localhost:3000`.
+
+### macOS/Linux
 
 ```bash
+chmod +x run_laptop.sh
 ./run_laptop.sh
 ```
 
-The launcher installs missing dependencies, starts the backend in `browser` mode, starts
-the dashboard, and opens `http://localhost:3000`. Allow browser camera permission, then
-choose a camera in the dashboard. Browser camera access requires `localhost` or HTTPS.
+Allow camera permission in the browser, select **Camera** in the dashboard, and
+choose the required camera. Browser camera access requires `localhost` or HTTPS.
+To use a phone as a webcam, connect it with a supported webcam bridge such as
+Phone Link, DroidCam, Iriun, or Camo, then press **Refresh** in the dashboard.
 
-For a useful test scene, stand far enough away that both the head and torso are visible.
-With a hard hat and vest, the worker box should become green. Removing required PPE first
-shows `CHECKING`, then becomes a red violation after the temporal rule is satisfied.
+## Manual local startup
 
-### Phone as a camera
+Use separate terminals from the repository root.
 
-Connect the phone as a webcam using Windows Phone Link, DroidCam, Iriun, or Camo. Put it
-in landscape orientation, choose `Camera` in the dashboard, and press `Refresh` if it is
-not listed. Close Zoom, Teams, or other applications that may already own the camera.
+### Backend
 
-## Run manually with the ESP32-CAM
-
-Start the backend in one terminal:
-
-```bash
-cd backend
+```powershell
+cd C:\Users\mdsha\Desktop\iisms\backend
 python -m pip install -r requirements.txt
-uvicorn main:app --host 0.0.0.0 --port 8000
+$env:SOURCE="browser"
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Start the dashboard in another terminal:
+### Frontend
 
-```bash
-cd frontend
+```powershell
+cd C:\Users\mdsha\Desktop\iisms\frontend
 npm install
 npm run dev
 ```
 
-Open `http://localhost:3000` and select `ESP32-CAM` as the source.
+Open <http://localhost:3000>.
 
-### Flash the firmware
+For ESP32 mode, start the backend with `$env:SOURCE="esp32"` instead. The
+dashboard can then select **ESP32-CAM**. `SOURCE` controls which incoming/local
+source is accepted; changing the dashboard source calls `POST /api/source`.
 
-1. Open `firmware/esp32_cam/esp32_cam.ino`.
-2. Set `WIFI_SSID` and `WIFI_PASS` to the same network used by the computer.
-3. Set `SERVER_URL` to the computer's LAN address, for example
-   `http://192.168.1.100:8000/ingest`. Do not use `localhost` or `127.0.0.1`;
-   those addresses refer to the ESP32 itself.
-4. Select the exact ESP32-S3-CAM board definition for your hardware, enable PSRAM
-   when available, and choose a partition with enough application space.
-5. Flash the board and open the serial monitor at 115200 baud. It should print the
-   board IP and `Frame sent ... HTTP 200` for successful uploads.
-6. Start the backend with `SOURCE=esp32`, start the dashboard, and select `ESP32-CAM`
-   as the source.
-7. Allow inbound TCP port 8000 through the computer firewall if required.
-
-The firmware captures locally at up to 5 FPS and sends raw JPEG bodies to
-`POST /ingest`. Capture and upload run independently: the uploader always sends
-the newest completed JPEG and drops stale frames when the network is slower than
-the camera. For an internet deployment,
-use the HTTPS endpoint exposed by the reverse proxy, for example
-`https://api.example.com/ingest`. The uploader reuses the HTTPS connection and
-uses bounded timeouts so a slow WAN request cannot build an unbounded camera
-buffer. It does not change the camera sensor settings when switching from local
-HTTP to HTTPS.
-
-The firmware currently uses `setInsecure()` for TLS because the server CA
-certificate is not bundled in the sketch. Use a CA certificate or certificate
-bundle before treating the endpoint as production-secure.
-
-The firmware captures VGA JPEG frames approximately every 200 ms, which is up to
-5 FPS locally. It uploads the newest available frame without waiting for older
-frames, reconnects Wi-Fi when necessary, and keeps camera timing independent of
-WAN latency. Use a stable 5V supply; weak power can cause resets.
-
-## Fallback sources
-
-The dashboard can switch between `ESP32-CAM`, browser `Camera`, and `Video file`. A video
-file is looped continuously. Configure its path with `VIDEO_PATH`; the default is
-`sample.mp4` relative to the backend working directory. You can also simulate the ESP32
-request pattern directly:
-
-```bash
-cd backend
-python simulate_esp32.py path/to/clip.mp4
-```
-
-The `browser` source is used by the dashboard camera uploader. The backend also accepts
-`webcam` as a local OpenCV source when started with `SOURCE=webcam`.
-
-## Compliance logic
-
-The implementation in `backend/compliance.py` deliberately uses containment rather than
-ordinary IoU for PPE placement:
-
-1. Person detections require confidence `>= 0.50`; PPE detections require `>= 0.40`.
-2. A hard hat is valid when at least 50% of the hat's own box lies in the person's head
-   zone, spanning the top 30% of the person box plus 10% above it.
-3. A vest is valid when at least 40% of the vest's own box lies in the torso zone, from
-   20% to 80% of the person's height.
-4. Each hat and vest is assigned to only one person using the best overlap, so an item on
-   a bench or worn by a nearby worker cannot satisfy another worker.
-5. A lightweight IoU tracker keeps worker IDs stable between frames.
-6. A violation is confirmed by 2 bad frames within the latest 3 frames. The intermediate
-   state is `CHECKING`, reducing alerts from one missed detection.
-7. The same worker and PPE item alert at most once every 30 seconds.
-
-The dashboard reports the measured `Frame to annotated` latency, processing FPS, worker
-count, compliant count, and confirmed violation count.
-
-## Configuration
-
-Set these environment variables before starting the backend:
-
-| Variable          | Default                                          | Purpose                                                  |
-| ----------------- | ------------------------------------------------ | -------------------------------------------------------- |
-| `MODEL_PATH`      | `backend/best.pt` when run from the project root | YOLO weights path                                        |
-| `IMGSZ`           | `416`                                            | Inference image size; use `640` for maximum detail       |
-| `CONF_PERSON`     | `0.50`                                           | Person confidence threshold                              |
-| `CONF_PPE`        | `0.40`                                           | Hat, vest, and other PPE threshold                       |
-| `DEVICE`          | `cpu`                                            | Ultralytics device, such as `cpu` or `0`                 |
-| `SOURCE`          | `esp32`                                          | Initial source: `esp32`, `browser`, `webcam`, or `video` |
-| `VIDEO_PATH`      | `sample.mp4`                                     | Local video fallback path                                |
-| `WEBCAM_INDEX`    | `0`                                              | OpenCV webcam index                                      |
-| `LOCAL_FPS`       | `6`                                              | Local webcam/video submission rate                       |
-| `REQUIRE_HARDHAT` | `1`                                              | Require a hard hat when set to `1`                       |
-| `REQUIRE_VEST`    | `1`                                              | Require a vest when set to `1`                           |
-| `SHOW_OTHER_PPE`  | `1`                                              | Draw gloves, masks, and boots when set to `1`            |
-| `JPEG_QUALITY`    | `80`                                             | Annotated stream JPEG quality                           |
-
-PowerShell example:
+### Production-style frontend
 
 ```powershell
-$env:CONF_PPE="0.30"
+cd C:\Users\mdsha\Desktop\iisms\frontend
+npm run build
+npm run start
+```
+
+By default, the browser connects to `http://<dashboard-host>:8000`. Set
+`NEXT_PUBLIC_API_URL` when the API is on another host:
+
+```powershell
+$env:NEXT_PUBLIC_API_URL="https://api.example.com"
+npm run build
+npm run start
+```
+
+## ESP32-S3 hardware setup
+
+The active firmware is [firmware/ESP32_S3_CAM_Test/src/main.cpp](firmware/ESP32_S3_CAM_Test/src/main.cpp).
+Its PlatformIO environment is `esp32-s3-devkitc-1`.
+
+Before flashing, edit the local firmware copy and set:
+
+```cpp
+const char* WIFI_SSID = "YOUR_WIFI_SSID";
+const char* WIFI_PASS = "YOUR_WIFI_PASSWORD";
+const char* SERVER_URL = "http://192.168.0.2:8000/ingest";
+```
+
+Use the FastAPI server's LAN address, not `localhost` or `127.0.0.1`; those
+addresses point back to the ESP32. For a deployed reverse proxy, use the HTTPS
+ingest URL instead:
+
+```cpp
+const char* SERVER_URL = "https://api.example.com/ingest";
+```
+
+The server and board must be able to reach each other, and the server firewall
+must allow the API port. The firmware's camera pin map, frame size, JPEG quality,
+Wi-Fi behavior, and upload buffers are defined in `main.cpp`.
+
+### Build, flash, and monitor
+
+From `firmware/ESP32_S3_CAM_Test`:
+
+```powershell
+pio run
+pio run --target upload
+pio device monitor --baud 115200
+```
+
+If more than one board is connected, add the port:
+
+```powershell
+pio run --target upload --upload-port COM3
+pio device monitor --port COM3 --baud 115200
+```
+
+Expected startup output includes the Wi-Fi address, `Camera initialized.`,
+the uploader buffer count, and messages such as:
+
+```text
+Frame sent: 3500 bytes, HTTPS 200
+```
+
+An HTTP 2xx response means FastAPI accepted the JPEG. Repeated skipped-frame
+messages indicate uploader buffer pressure; they do not by themselves mean the
+camera sensor failed. The uploader keeps the newest frame and discards stale
+frames when the network or inference server is slower than capture.
+
+The firmware uses two large PSRAM buffers when PSRAM is available. Without PSRAM
+it falls back to two 64 KB buffers when memory permits and reduces capture to
+QVGA. It reconnects Wi-Fi after a disconnect and uses bounded HTTPS timeouts.
+
+### Firmware security note
+
+The current firmware calls `WiFiClientSecure::setInsecure()`. This permits
+deployment without embedding a CA certificate, but it does not authenticate the
+server certificate. Configure a trusted CA certificate or certificate bundle
+before using the HTTPS endpoint in a security-sensitive production environment.
+
+Never commit real Wi-Fi credentials, private keys, or deployment secrets.
+
+## Alternative input sources
+
+The backend supports four source modes:
+
+| Mode | Description |
+| --- | --- |
+| `esp32` | Accepts JPEG uploads from the ESP32 or another HTTP client |
+| `browser` | Accepts JPEG frames uploaded by the dashboard browser camera |
+| `webcam` | Opens local OpenCV webcam index `WEBCAM_INDEX` |
+| `video` | Loops a local video file from `VIDEO_PATH` |
+
+The dashboard exposes ESP32, browser camera, and video-file controls. The
+`webcam` source is available through the API/configuration path.
+
+To simulate an ESP32 sender without hardware:
+
+```powershell
+cd C:\Users\mdsha\Desktop\iisms\backend
+python simulate_esp32.py path\to\clip.mp4 http://localhost:8000
+```
+
+The simulator accepts an image, video path, or numeric webcam index. It posts
+JPEG data to `/ingest` at approximately 2.5 FPS.
+
+## Backend API
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/ingest` | Accept one raw JPEG request body |
+| `GET` | `/stream` | Annotated multipart MJPEG stream |
+| `GET` | `/snapshot.jpg` | Latest annotated JPEG |
+| `GET` | `/api/health` | Health check and loaded model classes |
+| `GET` | `/api/stats` | Current source, FPS, latency, worker, and frame metrics |
+| `POST` | `/api/source` | Change source; JSON is `{"mode":"esp32"}` or includes `path` |
+| `GET` | `/api/events` | Current in-memory violation events |
+| `DELETE` | `/api/events` | Clear in-memory events |
+| `WS` | `/ws` | History, violation notifications, and stats every 250 ms |
+
+`/ingest` accepts only a raw JPEG body with `Content-Type: image/jpeg`. Frames
+larger than 2 MB or invalid JPEG data receive HTTP 400. Uploads are ignored
+when the active source is neither `esp32` nor `browser`.
+
+Example request:
+
+```powershell
+curl.exe -X POST http://localhost:8000/ingest `
+  -H "Content-Type: image/jpeg" `
+  --data-binary "@frame.jpg"
+```
+
+## Detection and compliance rules
+
+The bundled model contains these classes:
+
+```text
+Gloves, Hard_hat, Mask, Person, Safety_boots, Vest
+```
+
+Hard hats and vests are enforced requirements. Gloves, masks, and safety boots
+are informational detections and can be drawn when `SHOW_OTHER_PPE=1`.
+
+The compliance pipeline:
+
+1. Person detections require confidence `>= 0.50`; PPE detections require
+   confidence `>= 0.40`.
+2. A hard hat is credited when at least 50% of its own box is inside the
+   person's head zone: the top 30% of the person plus 10% above it.
+3. A vest is credited when at least 40% of its own box is inside the torso zone:
+   20% through 80% of the person height.
+4. Each hat and vest can be assigned to only one person, preventing nearby or
+   background PPE from satisfying the wrong worker.
+5. Worker IDs are maintained with IoU matching and missing tracks survive for
+   a small frame window.
+6. A missing item becomes a confirmed violation after 2 bad frames in the
+   latest 3-frame history. Before confirmation, the worker is `CHECKING`.
+7. The same worker/item alert is rate-limited to once every 30 seconds.
+
+Events are held in memory with a maximum of 200 entries and are lost when the
+backend restarts.
+
+## Backend configuration
+
+Set environment variables before starting Uvicorn:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MODEL_PATH` | `backend/best.pt` when run from the project root | YOLO weights |
+| `IMGSZ` | `416` | Inference size; `640` favors detail over speed |
+| `CONF_PERSON` | `0.50` | Person confidence threshold |
+| `CONF_PPE` | `0.40` | PPE confidence threshold |
+| `DEVICE` | `cpu` | Ultralytics device, for example `0` for GPU |
+| `SOURCE` | `esp32` | Initial source mode |
+| `VIDEO_PATH` | `sample.mp4` | Default local video source |
+| `WEBCAM_INDEX` | `0` | OpenCV webcam index |
+| `LOCAL_FPS` | `6` | Local webcam/video submission pace |
+| `REQUIRE_HARDHAT` | `1` | Require hard hat when set to `1` |
+| `REQUIRE_VEST` | `1` | Require vest when set to `1` |
+| `SHOW_OTHER_PPE` | `1` | Draw gloves/masks/boots when set to `1` |
+| `JPEG_QUALITY` | `80` | Annotated output JPEG quality |
+
+Windows example:
+
+```powershell
+cd C:\Users\mdsha\Desktop\iisms\backend
+$env:SOURCE="esp32"
 $env:IMGSZ="416"
-$env:LOCAL_FPS="4"
-uvicorn main:app --host 0.0.0.0 --port 8000
+$env:JPEG_QUALITY="80"
+python -m uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-## API
+Use `IMGSZ=640` when detection detail is more important than CPU throughput.
+Use the dashboard's measured `fps` and `latency_ms` values to evaluate changes.
 
-| Method   | Route           | Description                                                 |
-| -------- | --------------- | ----------------------------------------------------------- | ------- | ------ | --------------------------------------- |
-| `POST`   | `/ingest`       | Accept one raw JPEG request body from ESP32 or browser mode |
-| `GET`    | `/stream`       | Annotated MJPEG stream for the dashboard                    |
-| `GET`    | `/snapshot.jpg` | Latest annotated JPEG                                       |
-| `GET`    | `/api/stats`    | Current metrics, source, latency, FPS, and source errors    |
-| `GET`    | `/api/events`   | In-memory violation history                                 |
-| `DELETE` | `/api/events`   | Clear the current violation history                         |
-| `POST`   | `/api/source`   | Change source with `{"mode":"esp32                          | browser | webcam | video"}`; video accepts optional `path` |
-| `GET`    | `/api/health`   | Server health and loaded model class names                  |
-| `WS`     | `/ws`           | Sends event history, new violations, and stats updates      |
+## Deployment
 
-Events and metrics are stored only in process memory. Restarting the backend clears them.
+The GitHub Actions workflow at `.github/workflows/deploy.yml` runs for pushes to
+`main`. It connects to the configured Hostinger VPS over SSH and executes:
 
-## Tests
-
-Run the pure compliance tests:
-
-```bash
-cd backend
-python -m pytest tests/test_compliance.py
+```text
+/usr/local/bin/deploy-worker-safety.sh
 ```
 
-Run the end-to-end server test. It injects a fake YOLO implementation, so it does not
-need to load the real model:
+Configure these repository secrets before relying on automatic deployment:
 
-```bash
-python tests/test_server.py
+- `VPS_HOST`
+- `VPS_USER`
+- `VPS_SSH_KEY_B64`
+
+The workflow assumes the VPS already has the deployment script, application
+dependencies, model weights, reverse proxy, and process manager configured.
+The repository workflow itself does not provision those services.
+
+For a public deployment:
+
+1. Run FastAPI behind a process manager and reverse proxy.
+2. Serve the dashboard from a stable origin.
+3. Configure `NEXT_PUBLIC_API_URL` to the public API origin.
+4. Proxy WebSocket upgrades for `/ws` and streaming responses for `/stream`.
+5. Expose `/ingest` only over HTTPS and configure the ESP32 endpoint accordingly.
+6. Add authentication/rate limiting before exposing the API to the public internet.
+7. Replace `setInsecure()` with certificate validation in the firmware.
+
+## Validation
+
+### Backend server regression test
+
+This test injects a fake YOLO implementation, so it does not require Torch or
+the model to run:
+
+```powershell
+cd C:\Users\mdsha\Desktop\iisms\backend
+python tests\test_server.py
 ```
 
-The tests cover spatial hat/vest assignment, bench-item rejection, stable worker IDs,
-temporal violation confirmation, alert cooldown behavior, JPEG ingestion, MJPEG snapshots,
-WebSocket messages, source switching, and invalid input handling.
+### Compliance tests
 
-## Scope and limitations
+With `pytest` installed:
 
-Included: multi-class PPE detection, geometric worker-item association, green/red
-bounding boxes, live incident logging, browser-camera support, video fallback, and ESP32
-snapshot ingestion.
+```powershell
+cd C:\Users\mdsha\Desktop\iisms\backend
+python -m pytest tests\test_compliance.py
+```
 
-Intentionally excluded: persistent SQL/NoSQL storage, accounts, authentication, user
-roles, facial recognition, biometric records, and production-grade fleet management.
+### Frontend production build
 
-This is a proof-of-concept safety aid, not a certified replacement for workplace safety
-inspections. Lighting, camera angle, occlusion, model confidence, Wi-Fi quality, and
-training-data coverage can affect results.
+```powershell
+cd C:\Users\mdsha\Desktop\iisms\frontend
+npm run build
+```
 
-## Demo checklist
+## Troubleshooting
 
-1. Install backend and frontend dependencies before the presentation.
-2. Verify the dashboard's measured latency and FPS with the actual demonstration machine.
-3. Test the fallback `Camera` or `Video file` source before connecting the ESP32.
-4. Capture representative frames from the target room and tune `CONF_PPE` only after
-   checking the resulting false positives and false negatives.
-5. Confirm the ESP32 has stable power, correct Wi-Fi credentials, the computer's LAN IP,
-   and access to backend port 8000.
+### The dashboard shows “Waiting for camera”
+
+- Confirm the backend is running with `SOURCE=esp32`.
+- Confirm the ESP32 `SERVER_URL` uses the server LAN/public address.
+- Confirm the board and server can reach each other.
+- Check serial output for `HTTPS 200` or `HTTP 200`.
+- Check `GET /api/stats`; `last_input_age` should remain low.
+- Allow the API port through the server firewall.
+
+### Frames are accepted but the view is slow
+
+HTTP 200 confirms upload acceptance, not completed inference. Check `fps`,
+`latency_ms`, and `dropped_inputs` in `/api/stats`. The system intentionally
+drops stale frames under load. Lower `IMGSZ`, reduce `JPEG_QUALITY`, improve
+network latency, or use a GPU before increasing the camera capture rate.
+
+### The ESP32 prints no application logs
+
+- Monitor at 115200 baud.
+- Verify the selected PlatformIO upload port.
+- Press the board reset button after opening the monitor.
+- Confirm the board's USB/serial mode exposes the application UART.
+- Check power and camera wiring.
+
+### The browser camera does not open
+
+Use `http://localhost:3000` or HTTPS, allow camera permission, close other
+applications using the camera, and press **Refresh** in the camera selector.
+
+### Port 3000 or 8000 is already in use
+
+Stop the existing development server or choose another port. Do not start a
+second copy on the same port.
+
+## License and operational status
+
+No license file is currently included. Treat the repository as an internal
+prototype until licensing, authentication, data retention, and production
+security requirements are defined.
