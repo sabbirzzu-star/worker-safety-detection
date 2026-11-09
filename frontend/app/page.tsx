@@ -58,77 +58,48 @@ export default function Dashboard() {
 
   const noSignal = stats?.source === "esp32" && (stats.last_input_age === null || stats.last_input_age > 5);
   const bad = (stats?.violations ?? 0) > 0;
+  const sourceLabel = SOURCES.find((source) => source.id === stats?.source)?.label ?? "Connecting";
+  const feedState = !online ? "Connecting to server" : noSignal ? "Waiting for camera" : bad ? "Attention required" : "Monitoring active";
 
   return (
-    <main className="mx-auto max-w-[1280px] p-4 md:p-6">
-      <header className="mb-5 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">Industrial Safety Monitor</h1>
-          <p className="text-sm text-mute">Hard hat and high-visibility vest compliance, live</p>
-        </div>
-        <div className="flex items-center gap-2 text-sm text-mute" role="status">
-          <span className={`h-2.5 w-2.5 rounded-full ${online ? "bg-ok" : "bg-bad"}`} />
-          {online ? "Server connected" : "Server offline, retrying"}
+    <main className="min-h-screen">
+      <header className="border-b border-line bg-[#151b21]">
+        <div className="mx-auto flex max-w-[1480px] items-center justify-between gap-4 px-4 py-3 md:px-6">
+          <div className="flex items-center gap-3"><div className="grid h-9 w-9 place-items-center rounded-lg bg-hivis text-sm font-black text-black">IS</div><div><h1 className="text-base font-semibold text-white md:text-lg">Industrial Safety Monitor</h1><p className="hidden text-xs text-mute sm:block">Live PPE compliance</p></div></div>
+          <div className="flex items-center gap-2 text-xs"><span className={`status-dot ${online ? "status-dot-ok" : "status-dot-bad"}`} /><span className={online ? "text-ok" : "text-bad"}>{online ? "Online" : "Offline"}</span></div>
         </div>
       </header>
 
-      <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
-        <section>
-          <div className={`relative overflow-hidden rounded-md border bg-black ${bad ? "border-bad" : "border-line"}`}>
-            {api && /* eslint-disable-next-line @next/next/no-img-element */
-              <img src={`${api}/stream`} alt="Live annotated camera feed" className="block aspect-[4/3] w-full object-contain" />}
-            {noSignal && (
-              <div className="absolute inset-0 grid place-items-center bg-black/70 text-center">
-                <div><p className="text-lg font-medium">No frames from the ESP32-CAM</p>
-                  <p className="mt-1 text-sm text-mute">Check power, Wi-Fi and SERVER_URL, or switch to Webcam / Video file.</p></div>
-              </div>)}
-            {stats?.source_error && (
-              <div className="absolute inset-x-0 bottom-0 bg-bad/90 px-3 py-2 text-sm">{stats.source_error}</div>)}
-          </div>
-          <dl className="mt-3 flex flex-wrap gap-x-8 gap-y-1 text-sm text-mute">
-            <div className="flex gap-2"><dt>Processing</dt><dd className="text-[#e7ebef]">{stats?.fps ?? 0} FPS</dd></div>
-            <div className="flex gap-2"><dt>Frame to annotated</dt><dd className="text-[#e7ebef]">{stats?.latency_ms ?? 0} ms</dd></div>
-            <div className="flex gap-2"><dt>Frames</dt><dd className="text-[#e7ebef]">{stats?.frames ?? 0}</dd></div>
-          </dl>
-        </section>
+      <div className="mx-auto max-w-[1480px] px-3 py-4 sm:px-5 md:px-6 md:py-6">
+        <div className="mb-4 flex items-center justify-between gap-3"><div><p className="text-xs font-medium uppercase tracking-[.16em] text-hivis">Live view</p><h2 className="mt-1 text-xl font-semibold text-white md:text-2xl">Camera monitoring</h2></div><div className={`rounded-full border px-2.5 py-1 text-[11px] font-medium ${bad ? "border-bad/40 bg-bad/10 text-bad" : noSignal ? "border-warn/40 bg-warn/10 text-warn" : "border-ok/30 bg-ok/10 text-ok"}`}>{feedState}</div></div>
 
-        <aside className="flex flex-col gap-5">
-          <div className="grid grid-cols-3 gap-px overflow-hidden rounded-md border border-line bg-line">
-            <Metric label="Workers" value={stats?.workers ?? 0} />
-            <Metric label="Compliant" value={stats?.compliant ?? 0} tone="ok" />
-            <Metric label="Violations" value={stats?.violations ?? 0} tone={bad ? "bad" : undefined} />
-          </div>
-
-          <div>
-            <h2 className="mb-2 text-sm font-medium">Video source</h2>
-            <div className="grid grid-cols-3 rounded-md border border-line p-0.5" role="group" aria-label="Video source">
-              {SOURCES.map((s) => (
-                <button key={s.id} onClick={() => setSource(s.id)} aria-pressed={stats?.source === s.id}
-                  className={`rounded px-2 py-1.5 text-sm outline-none focus-visible:ring-2 focus-visible:ring-hivis ${
-                    stats?.source === s.id ? "bg-hivis font-medium text-black" : "text-mute hover:text-white"}`}>
-                  {s.label}
-                </button>))}
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px] lg:items-start">
+          <section className="min-w-0">
+            <div className={`relative overflow-hidden rounded-xl border bg-black shadow-2xl ${bad ? "border-bad/60" : "border-line"}`}>
+              <div className="feed-toolbar absolute inset-x-0 top-0 z-10 flex items-center justify-between px-3 py-3 sm:px-4"><span className="flex items-center gap-2 text-[11px] font-semibold tracking-wide text-white"><span className="status-dot status-dot-live" />ANNOTATED CAMERA</span><span className="rounded bg-black/60 px-2 py-1 text-[11px] text-white/80">{sourceLabel}</span></div>
+              {api && /* eslint-disable-next-line @next/next/no-img-element */
+                <img src={`${api}/stream`} alt="Live annotated camera feed" className="camera-feed block h-auto max-h-[78vh] min-h-[240px] w-full bg-black object-contain" />}
+              {noSignal && <div className="absolute inset-0 grid place-items-center bg-black/80 px-5 text-center"><div className="max-w-xs"><div className="mx-auto mb-3 grid h-10 w-10 place-items-center rounded-full bg-warn/15 font-bold text-warn">!</div><p className="font-semibold text-white">No ESP32 frames</p><p className="mt-1 text-xs leading-5 text-mute">Check the board Wi-Fi and SERVER_URL. This view will recover automatically.</p></div></div>}
+              {stats?.source_error && <div className="absolute inset-x-0 bottom-0 bg-bad/90 px-3 py-2 text-xs">{stats.source_error}</div>}
             </div>
-          </div>
+            <div className="grid grid-cols-3 divide-x divide-line rounded-b-xl border-x border-b border-line bg-panel"><FeedStat label="FPS" value={`${stats?.fps ?? 0}`} /><FeedStat label="Latency" value={`${stats?.latency_ms ?? 0} ms`} /><FeedStat label="Frames" value={`${stats?.frames ?? 0}`} /></div>
+          </section>
 
-          <CameraPicker api={api} active={stats?.source === "browser"} />
-
-          <div className="flex min-h-0 flex-1 flex-col">
-            <div className="mb-2 flex items-center justify-between">
-              <h2 className="text-sm font-medium">Incident log</h2>
-              {log.length > 0 && <button onClick={clearLog} className="text-xs text-mute underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:ring-hivis">Clear</button>}
+          <aside className="space-y-4">
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-2">
+              <Metric label="Workers" value={stats?.workers ?? 0} detail="Detected now" />
+              <Metric label="Compliant" value={stats?.compliant ?? 0} detail="PPE complete" tone="ok" />
+              <Metric label="Violations" value={stats?.violations ?? 0} detail="Needs attention" tone={bad ? "bad" : undefined} />
+              <Metric label="Checking" value={stats?.pending ?? 0} detail="Being confirmed" tone="warn" />
             </div>
-            <ul className="max-h-[420px] divide-y divide-line overflow-y-auto rounded-md border border-line bg-panel">
-              {log.length === 0 && <li className="p-4 text-sm text-mute">No violations recorded.</li>}
-              {log.map((e) => (
-                <li key={e.id} className="flex items-baseline justify-between gap-3 px-3 py-2.5 text-sm">
-                  <span><span className="font-medium text-bad">{e.item === "hardhat" ? "No hard hat" : "No vest"}</span>
-                    <span className="text-mute">  Worker #{e.worker}</span></span>
-                  <time className="text-xs text-mute">{clock(e.ts)}</time>
-                </li>))}
-            </ul>
-          </div>
-        </aside>
+            <div className="rounded-xl border border-line bg-panel p-3">
+              <div className="mb-2 flex items-center justify-between"><h2 className="text-sm font-semibold text-white">Video source</h2><span className="text-[10px] uppercase tracking-wider text-mute">{sourceLabel}</span></div>
+              <div className="grid grid-cols-3 gap-1 rounded-lg bg-[#11161b] p-1" role="group" aria-label="Video source">{SOURCES.map((s) => <button key={s.id} onClick={() => setSource(s.id)} aria-pressed={stats?.source === s.id} className={`rounded-md px-1 py-2 text-[11px] font-medium outline-none transition focus-visible:ring-2 focus-visible:ring-hivis ${stats?.source === s.id ? "bg-hivis text-black" : "text-mute hover:bg-[#202931] hover:text-white"}`}>{s.label}</button>)}</div>
+            </div>
+            <CameraPicker api={api} active={stats?.source === "browser"} />
+            <div className="rounded-xl border border-line bg-panel p-3"><div className="mb-2 flex items-center justify-between"><div><h2 className="text-sm font-semibold text-white">Incidents</h2><p className="text-[11px] text-mute">{log.length ? `${log.length} recorded` : "All clear"}</p></div>{log.length > 0 && <button onClick={clearLog} className="rounded px-2 py-1 text-[11px] text-mute hover:bg-[#202931] hover:text-white">Clear</button>}</div><ul className="max-h-56 divide-y divide-line overflow-y-auto rounded-lg border border-line bg-[#11161b]">{log.length === 0 && <li className="p-5 text-center text-xs text-ok">✓ No violations recorded</li>}{log.map((e) => <li key={e.id} className="flex items-center justify-between gap-2 px-2.5 py-2.5"><span className="min-w-0 truncate text-xs text-white"><span className="mr-1.5 text-bad">!</span>{e.item === "hardhat" ? "Hard hat missing" : "Vest missing"} <span className="text-mute">· Worker #{e.worker}</span></span><time className="shrink-0 text-[10px] text-mute">{clock(e.ts)}</time></li>)}</ul></div>
+          </aside>
+        </div>
       </div>
 
       <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-80 flex-col gap-2" aria-live="assertive">
@@ -142,9 +113,13 @@ export default function Dashboard() {
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone?: "ok" | "bad" }) {
-  const c = tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : "text-white";
-  return (<div className="bg-panel px-3 py-3"><div className={`text-3xl font-semibold ${c}`}>{value}</div><div className="text-xs text-mute">{label}</div></div>);
+function Metric({ label, value, detail, tone }: { label: string; value: number; detail: string; tone?: "ok" | "bad" | "warn" }) {
+  const c = tone === "ok" ? "text-ok" : tone === "bad" ? "text-bad" : tone === "warn" ? "text-warn" : "text-white";
+  return (<div className="rounded-2xl border border-line bg-panel p-4 md:p-5"><div className={`text-3xl font-semibold tracking-tight md:text-4xl ${c}`}>{value}</div><div className="mt-1 text-sm font-medium text-white">{label}</div><div className="mt-1 text-xs text-mute">{detail}</div></div>);
+}
+
+function FeedStat({ label, value }: { label: string; value: string }) {
+  return <div className="px-3 py-3 md:px-4"><div className="text-sm font-semibold text-white">{value}</div><div className="mt-1 text-[11px] text-mute">{label}</div></div>;
 }
 
 /** Lists every camera the browser can see (laptop, USB, phone-as-webcam) by name and streams the chosen one to /ingest. */

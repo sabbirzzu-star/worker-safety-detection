@@ -6,3 +6,13 @@ body { font-family: ui-sans-serif, "Segoe UI", "Helvetica Neue", Arial, "Noto Sa
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 @keyframes slide-in { from { transform: translateX(16px); opacity: 0 } to { transform: none; opacity: 1 } }
 .toast { animation: slide-in .18s ease-out; }
+.status-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 9999px; }
+.status-dot-ok { background: #46bf80; box-shadow: 0 0 0 4px rgba(70, 191, 128, .12); }
+.status-dot-bad { background: #ef5350; box-shadow: 0 0 0 4px rgba(239, 83, 80, .12); }
+.status-dot-live { background: #46bf80; box-shadow: 0 0 0 4px rgba(70, 191, 128, .12); animation: pulse-live 1.8s ease-in-out infinite; }
+@keyframes pulse-live { 50% { opacity: .45; transform: scale(.8); } }
+.camera-feed { image-rendering: auto; }
+.feed-toolbar { background: linear-gradient(180deg, rgba(0,0,0,.72), transparent); }
+@media (max-width: 640px) {
+  .camera-feed { min-height: 220px; max-height: 62vh; }
+}
